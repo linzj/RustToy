@@ -24,6 +24,7 @@ mod e_cores {
     pub fn identify_e_cores() -> windows::core::Result<Vec<usize>> {
         let mut e_cores = Vec::new();
         let mut buffer_size: u32 = 0;
+        let mut found_p_core = false;
 
         // First call to determine the size of the buffer needed.
         let result = unsafe {
@@ -67,11 +68,20 @@ mod e_cores {
                                             }
                                         }
                                     }
+                                } else {
+                                    found_p_core = true;
                                 }
                             }
                             // Move to the next entry
                             offset += info.Size as usize;
                         }
+                    }
+                    if !found_p_core {
+                        // If no P-core was found, return an error
+                        return Err(windows::core::Error::new(
+                            windows::Win32::Foundation::ERROR_NOT_SUPPORTED.into(), // Convert to HRESULT
+                            "not heterogeneous cpu arch".into(),
+                        ));
                     }
                 } else {
                     return Err(windows::core::Error::from_win32());
