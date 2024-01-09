@@ -8,6 +8,8 @@ edition = "2021"
 [dependencies]
 core_affinity = "0.5.10"
 libc = "0.2"
+num_cpus = "1.16.0"
+widestring = "1.0.2"
 
 [dependencies.windows]
 version = "0.52"
@@ -16,6 +18,10 @@ features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Threading",
+    "Win32_System_Performance",
     "Win32_System_SystemInformation",
     "Win32_UI_WindowsAndMessaging",
 ]
+
+[debug]
+debug = 3

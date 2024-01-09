@@ -1,151 +1,85 @@
-use core_affinity;
-use std::thread;
+mod core_detection;
+mod cpu_event;
 
-#[cfg(unix)]
-extern crate libc;
-
-#[cfg(windows)]
-use windows::Win32::System::Threading::{
-    GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_IDLE,
-};
-
-#[cfg(windows)]
-mod e_cores {
-    use windows::{
-        Win32::{
-            Foundation::{ERROR_INSUFFICIENT_BUFFER},
-            System::SystemInformation::{
-                GetLogicalProcessorInformationEx, RelationProcessorCore,
-                SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
-            },
-        },
-    };
-
-    pub fn identify_e_cores() -> windows::core::Result<Vec<usize>> {
-        let mut e_cores = Vec::new();
-        let mut buffer_size: u32 = 0;
-        let mut found_p_core = false;
-
-        // First call to determine the size of the buffer needed.
-        let result = unsafe {
-            GetLogicalProcessorInformationEx(RelationProcessorCore, None, &mut buffer_size)
-        };
-
-        // If the call fails because of an insufficient buffer, we allocate and try again.
-        if let Err(e) = result {
-            if e.code() == ERROR_INSUFFICIENT_BUFFER.into() {
-                let mut buffer = vec![0u8; buffer_size as usize];
-
-                // Second call to actually get the data.
-                let result = unsafe {
-                    GetLogicalProcessorInformationEx(
-                        RelationProcessorCore,
-                        Some(buffer.as_mut_ptr().cast()),
-                        &mut buffer_size,
-                    )
-                };
-
-                if result.is_ok() {
-                    let mut offset = 0;
-                    while (offset as u32) < buffer_size {
-                        unsafe {
-                            let info = &*(buffer.as_ptr().add(offset) as *const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX);
-
-                            if info.Relationship == RelationProcessorCore {
-                                let processor_info = &info.Anonymous.Processor;
-                                // Check if the EfficiencyClass suggests this is an E-core.
-                                if processor_info.EfficiencyClass == 0 {
-                                    let group_mask_ptr = processor_info.GroupMask.as_ptr();
-                                    // Iterate through GROUP_AFFINITY array
-                                    for i in 0..processor_info.GroupCount as isize {
-                                        let group_info = &*group_mask_ptr.offset(i);
-                                        // Get the affinity mask
-                                        let affinity: usize = group_info.Mask; // The mask is a usize.
-                                        // Identify the E-cores' logical processors
-                                        for j in 0..usize::BITS { // Use `usize::BITS` to be platform-independent.
-                                            if (affinity & (1 << j)) != 0 {
-                                                e_cores.push(group_info.Group as usize * usize::BITS as usize + j as usize);
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    found_p_core = true;
-                                }
-                            }
-                            // Move to the next entry
-                            offset += info.Size as usize;
-                        }
-                    }
-                    if !found_p_core {
-                        // If no P-core was found, return an error
-                        return Err(windows::core::Error::new(
-                            windows::Win32::Foundation::ERROR_NOT_SUPPORTED.into(), // Convert to HRESULT
-                            "not heterogeneous cpu arch".into(),
-                        ));
-                    }
-                } else {
-                    return Err(windows::core::Error::from_win32());
-                }
-            } else {
-                return Err(e);
-            }
-        }
-
-        Ok(e_cores)
-    }
-}
-
-#[cfg(not(windows))]
-mod e_cores {
-    pub fn identify_e_cores() -> Result<Vec<usize>, String> {
-        Err("identify_e_cores is not supported on non-Windows platforms.".to_string())
-    }
-}
+use std::sync::{Arc, atomic::AtomicBool, mpsc};
+use std::time::{Instant, Duration};
+use cpu_event::{CpuMonitor, SpinLooper, CpuEvent};
+use num_cpus;
 
 fn main() {
+    // Get the total number of logical cores
+    let total_cores = num_cpus::get();
+
     // [Windows] Get the E-cores identified by the system.
     #[cfg(windows)]
-    let e_core_ids = e_cores::identify_e_cores().expect("Failed to identify E-cores.");
+    let e_core_ids = core_detection::identify_e_cores().expect("Failed to identify E-cores.");
 
     // [Non-Windows] Placeholder for E-core IDs.
     #[cfg(not(windows))]
     let e_core_ids: Vec<usize> = Vec::new();
 
-    // Create and spawn threads with the specified CPU affinity.
-    let mut thread_handles = vec![];
-    for core_id in e_core_ids {
-        let handle = thread::spawn(move || {
-            // Set the thread's CPU affinity to the E-core.
-            core_affinity::set_for_current(core_affinity::CoreId { id: core_id });
+    let rest_of_cores: Vec<usize> = (0..total_cores)
+        .filter(|id| !e_core_ids.contains(id))
+        .collect();
 
-            // Set the thread's priority to the lowest.
-            set_lowest_priority();
+    let active_efficiency_cores = Arc::new(AtomicBool::new(true));
+    let active_performance_cores = Arc::new(AtomicBool::new(false));
+    // Create monitors
+    let efficiency_monitor = Arc::new(CpuMonitor::new(e_core_ids.clone(), CpuEvent::EfficiencyCoreMonitor(Vec::new()), active_efficiency_cores.clone()));
+    let performance_monitor = Arc::new(CpuMonitor::new(rest_of_cores, CpuEvent::PerformanceCoreMonitor(Vec::new()), active_performance_cores.clone()));
 
-            // Infinite loop to keep the thread alive.
-            loop {
-                std::hint::spin_loop();
+    // Start the monitors
+    let (sender, receiver) = mpsc::channel();
+    let efficiency_handle = CpuMonitor::start(efficiency_monitor.clone(), sender.clone());
+    let performance_handle = CpuMonitor::start(performance_monitor.clone(), sender.clone());
+
+    // Create and start the SpinLooper
+    let mut spin_looper = SpinLooper::new(e_core_ids);
+
+    // Main thread event loop
+    let mut last_event_time = Instant::now();
+    loop {
+        match receiver.recv_timeout(Duration::from_secs(10)) {
+            Ok(CpuEvent::EfficiencyCoreMonitor(consumed_cores)) => {
+                println!("Efficiency cores fully consumed: {:?}", consumed_cores);
+                if !performance_monitor.is_active() && efficiency_monitor.is_active() {
+                    efficiency_monitor.pause();
+                    performance_monitor.resume();
+                    spin_looper.start();
+                    last_event_time = Instant::now();
+                }
+            },
+            Ok(CpuEvent::PerformanceCoreMonitor(consumed_cores)) => {
+                println!("Performance cores fully consumed: {:?}", consumed_cores);
+                last_event_time = Instant::now();
+            },
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let elapsed = last_event_time.elapsed();
+                spin_looper.stop_and_join();
+                if elapsed >= Duration::from_secs(10) && performance_monitor.is_active() && !efficiency_monitor.is_active() {
+                    println!("No events from performance cores for {:?}. Switching to efficiency cores.", elapsed);
+                    performance_monitor.pause();
+                    efficiency_monitor.resume();
+                    last_event_time = Instant::now();
+                } else if !performance_monitor.is_active() && efficiency_monitor.is_active()  {
+                    println!("No efficiency cpu is fully consume, next loop!");
+                } else {
+                    // If the state is not as expected, raise an error or handle it accordingly.
+                    panic!("Unexpected state: performance monitor should be active and efficiency monitor should be inactive.");
+                }
+            },
+            Err(e) => {
+                // Handle other errors (e.g., channel disconnection)
+                println!("Error: {:?}", e);
+                break;
             }
-        });
-        thread_handles.push(handle);
+        }
     }
 
-    // Wait for all threads to finish (which will never happen due to the infinite loop).
-    for handle in thread_handles {
-        let _ = handle.join();
-    }
-}
+    // Stop the looper and join threads
+    efficiency_monitor.pause();
+    performance_monitor.pause();
 
-#[cfg(unix)]
-fn set_lowest_priority() {
-    unsafe {
-        libc::setpriority(libc::PRIO_PROCESS, 0, 19);
-    }
-}
-
-#[cfg(windows)]
-fn set_lowest_priority() {
-    unsafe {
-        let current_thread = GetCurrentThread();
-        let _ = SetThreadPriority(current_thread, THREAD_PRIORITY_IDLE);
-    }
+    efficiency_handle.join().expect("Failed to join efficiency monitor thread");
+    performance_handle.join().expect("Failed to join performance monitor thread");
 }
