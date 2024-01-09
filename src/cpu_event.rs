@@ -1,16 +1,18 @@
-use std::sync::{mpsc, Arc, atomic::{AtomicBool, Ordering}};
-use std::time::{Duration};
-use std::thread::{self, JoinHandle};
 use core_affinity::CoreId;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc,
+};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 #[cfg(windows)]
 use windows::{
-    core::{PCWSTR},
-    Win32::Foundation::{ERROR_SUCCESS},
+    core::PCWSTR,
+    Win32::Foundation::ERROR_SUCCESS,
     Win32::System::Performance::{
-        PdhAddCounterW, PdhCollectQueryData, PdhGetFormattedCounterValue,
-        PdhOpenQueryW, PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA, PDH_FMT_COUNTERVALUE,
-        PDH_FMT_DOUBLE,
+        PdhAddCounterW, PdhCollectQueryData, PdhGetFormattedCounterValue, PdhOpenQueryW,
+        PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA, PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE,
     },
 };
 // Define an enum for the events we are interested in
@@ -26,7 +28,11 @@ pub struct CpuMonitor {
 }
 
 impl CpuMonitor {
-    pub fn new(cores_to_monitor: Vec<usize>, event_type: CpuEvent, active: Arc<AtomicBool>) -> Self {
+    pub fn new(
+        cores_to_monitor: Vec<usize>,
+        event_type: CpuEvent,
+        active: Arc<AtomicBool>,
+    ) -> Self {
         CpuMonitor {
             cores_to_monitor,
             event_type,
@@ -48,12 +54,16 @@ impl CpuMonitor {
 
                 // Buffer to hold the counter paths for each core
                 let mut counter_handles: Vec<isize> = Vec::new();
-                
+
                 // Create a counter for each core
                 for &core_index in &self.cores_to_monitor {
-                    let counter_path = format!(r"\Processor Information(0,{})\% Processor Utility", core_index);
+                    let counter_path = format!(
+                        r"\Processor Information(0,{})\% Processor Utility",
+                        core_index
+                    );
                     let mut counter_handle: isize = 0;
-                    let wide_counter_path = widestring::U16CString::from_str(&counter_path).unwrap();
+                    let wide_counter_path =
+                        widestring::U16CString::from_str(&counter_path).unwrap();
                     status = PdhAddCounterW(
                         query,
                         PCWSTR(wide_counter_path.as_ptr()),
@@ -71,7 +81,7 @@ impl CpuMonitor {
                         thread::sleep(Duration::from_millis(500));
                         continue;
                     }
-                    
+
                     // Collect the query data
                     status = PdhCollectQueryData(query);
                     if status != ERROR_SUCCESS.0 {
@@ -90,7 +100,8 @@ impl CpuMonitor {
                     let mut fully_consumed_cores = Vec::new();
                     let mut counter_handles_index = 0;
                     for &core_index in &self.cores_to_monitor {
-                        let mut counter_value: PDH_FMT_COUNTERVALUE = PDH_FMT_COUNTERVALUE::default();
+                        let mut counter_value: PDH_FMT_COUNTERVALUE =
+                            PDH_FMT_COUNTERVALUE::default();
                         status = PdhGetFormattedCounterValue(
                             counter_handles[counter_handles_index],
                             PDH_FMT_DOUBLE,
@@ -99,7 +110,10 @@ impl CpuMonitor {
                         );
                         counter_handles_index += 1;
                         if status != ERROR_SUCCESS.0 {
-                            panic!("PdhGetFormattedCounterValue failed with error: {:x}", status);
+                            panic!(
+                                "PdhGetFormattedCounterValue failed with error: {:x}",
+                                status
+                            );
                         }
                         if counter_value.CStatus == PDH_CSTATUS_VALID_DATA
                             || counter_value.CStatus == PDH_CSTATUS_NEW_DATA
@@ -116,10 +130,10 @@ impl CpuMonitor {
                         let event = match &self.event_type {
                             CpuEvent::EfficiencyCoreMonitor(_) => {
                                 CpuEvent::EfficiencyCoreMonitor(fully_consumed_cores)
-                            },
+                            }
                             CpuEvent::PerformanceCoreMonitor(_) => {
                                 CpuEvent::PerformanceCoreMonitor(fully_consumed_cores)
-                            },
+                            }
                         };
                         if let Err(e) = sender.send(event) {
                             // Handle error (e.g., the receiver might have been dropped)
@@ -127,7 +141,6 @@ impl CpuMonitor {
                             panic!("Failed to send CpuEvent: {}", e);
                         }
                     }
-
                 }
                 // status = PdhCloseQuery(query);
                 // if status != ERROR_SUCCESS.0 {

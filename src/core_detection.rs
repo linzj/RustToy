@@ -1,11 +1,9 @@
 #[cfg(windows)]
-use windows::{
-    Win32::{
-        Foundation::{ERROR_INSUFFICIENT_BUFFER},
-        System::SystemInformation::{
-            GetLogicalProcessorInformationEx, RelationProcessorCore,
-            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
-        },
+use windows::Win32::{
+    Foundation::ERROR_INSUFFICIENT_BUFFER,
+    System::SystemInformation::{
+        GetLogicalProcessorInformationEx, RelationProcessorCore,
+        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
     },
 };
 
@@ -15,9 +13,8 @@ pub fn identify_e_cores() -> windows::core::Result<Vec<usize>> {
     let mut found_p_core = false;
 
     // First call to determine the size of the buffer needed.
-    let result = unsafe {
-        GetLogicalProcessorInformationEx(RelationProcessorCore, None, &mut buffer_size)
-    };
+    let result =
+        unsafe { GetLogicalProcessorInformationEx(RelationProcessorCore, None, &mut buffer_size) };
 
     // If the call fails because of an insufficient buffer, we allocate and try again.
     if let Err(e) = result {
@@ -37,7 +34,8 @@ pub fn identify_e_cores() -> windows::core::Result<Vec<usize>> {
                 let mut offset = 0;
                 while (offset as u32) < buffer_size {
                     unsafe {
-                        let info = &*(buffer.as_ptr().add(offset) as *const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX);
+                        let info = &*(buffer.as_ptr().add(offset)
+                            as *const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX);
 
                         if info.Relationship == RelationProcessorCore {
                             let processor_info = &info.Anonymous.Processor;
@@ -49,10 +47,14 @@ pub fn identify_e_cores() -> windows::core::Result<Vec<usize>> {
                                     let group_info = &*group_mask_ptr.offset(i);
                                     // Get the affinity mask
                                     let affinity: usize = group_info.Mask; // The mask is a usize.
-                                    // Identify the E-cores' logical processors
-                                    for j in 0..usize::BITS { // Use `usize::BITS` to be platform-independent.
+                                                                           // Identify the E-cores' logical processors
+                                    for j in 0..usize::BITS {
+                                        // Use `usize::BITS` to be platform-independent.
                                         if (affinity & (1 << j)) != 0 {
-                                            e_cores.push(group_info.Group as usize * usize::BITS as usize + j as usize);
+                                            e_cores.push(
+                                                group_info.Group as usize * usize::BITS as usize
+                                                    + j as usize,
+                                            );
                                         }
                                     }
                                 }

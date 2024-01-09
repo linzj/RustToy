@@ -1,10 +1,10 @@
 mod core_detection;
 mod cpu_event;
 
-use std::sync::{Arc, atomic::AtomicBool, mpsc};
-use std::time::{Instant, Duration};
-use cpu_event::{CpuMonitor, SpinLooper, CpuEvent};
+use cpu_event::{CpuEvent, CpuMonitor, SpinLooper};
 use num_cpus;
+use std::sync::{atomic::AtomicBool, mpsc, Arc};
+use std::time::{Duration, Instant};
 
 fn main() {
     // Get the total number of logical cores
@@ -25,8 +25,16 @@ fn main() {
     let active_efficiency_cores = Arc::new(AtomicBool::new(true));
     let active_performance_cores = Arc::new(AtomicBool::new(false));
     // Create monitors
-    let efficiency_monitor = Arc::new(CpuMonitor::new(e_core_ids.clone(), CpuEvent::EfficiencyCoreMonitor(Vec::new()), active_efficiency_cores.clone()));
-    let performance_monitor = Arc::new(CpuMonitor::new(rest_of_cores, CpuEvent::PerformanceCoreMonitor(Vec::new()), active_performance_cores.clone()));
+    let efficiency_monitor = Arc::new(CpuMonitor::new(
+        e_core_ids.clone(),
+        CpuEvent::EfficiencyCoreMonitor(Vec::new()),
+        active_efficiency_cores.clone(),
+    ));
+    let performance_monitor = Arc::new(CpuMonitor::new(
+        rest_of_cores,
+        CpuEvent::PerformanceCoreMonitor(Vec::new()),
+        active_performance_cores.clone(),
+    ));
 
     // Start the monitors
     let (sender, receiver) = mpsc::channel();
@@ -48,26 +56,32 @@ fn main() {
                     spin_looper.start();
                     last_event_time = Instant::now();
                 }
-            },
+            }
             Ok(CpuEvent::PerformanceCoreMonitor(consumed_cores)) => {
                 println!("Performance cores fully consumed: {:?}", consumed_cores);
                 last_event_time = Instant::now();
-            },
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let elapsed = last_event_time.elapsed();
                 spin_looper.stop_and_join();
-                if elapsed >= Duration::from_secs(10) && performance_monitor.is_active() && !efficiency_monitor.is_active() {
-                    println!("No events from performance cores for {:?}. Switching to efficiency cores.", elapsed);
+                if elapsed >= Duration::from_secs(10)
+                    && performance_monitor.is_active()
+                    && !efficiency_monitor.is_active()
+                {
+                    println!(
+                        "No events from performance cores for {:?}. Switching to efficiency cores.",
+                        elapsed
+                    );
                     performance_monitor.pause();
                     efficiency_monitor.resume();
                     last_event_time = Instant::now();
-                } else if !performance_monitor.is_active() && efficiency_monitor.is_active()  {
+                } else if !performance_monitor.is_active() && efficiency_monitor.is_active() {
                     println!("No efficiency cpu is fully consume, next loop!");
                 } else {
                     // If the state is not as expected, raise an error or handle it accordingly.
                     panic!("Unexpected state: performance monitor should be active and efficiency monitor should be inactive.");
                 }
-            },
+            }
             Err(e) => {
                 // Handle other errors (e.g., channel disconnection)
                 println!("Error: {:?}", e);
@@ -80,6 +94,10 @@ fn main() {
     efficiency_monitor.pause();
     performance_monitor.pause();
 
-    efficiency_handle.join().expect("Failed to join efficiency monitor thread");
-    performance_handle.join().expect("Failed to join performance monitor thread");
+    efficiency_handle
+        .join()
+        .expect("Failed to join efficiency monitor thread");
+    performance_handle
+        .join()
+        .expect("Failed to join performance monitor thread");
 }
