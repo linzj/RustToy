@@ -11,7 +11,8 @@ use windows::{
     Win32::Foundation::ERROR_SUCCESS,
     Win32::System::Performance::{
         PdhAddCounterW, PdhCollectQueryData, PdhGetFormattedCounterValue, PdhOpenQueryW,
-        PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA, PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE,
+        PDH_CALC_NEGATIVE_VALUE, PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA,
+        PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE,
     },
 };
 // Define an enum for the events we are interested in
@@ -105,6 +106,11 @@ impl CpuMonitor {
                             &mut counter_value,
                         );
                         counter_handles_index += 1;
+                        // This cpu has been shut down.
+                        if status == PDH_CALC_NEGATIVE_VALUE {
+                            continue;
+                        }
+
                         if status != ERROR_SUCCESS.0 {
                             panic!(
                                 "PdhGetFormattedCounterValue failed with error: {:x}",
