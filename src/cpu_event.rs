@@ -1,10 +1,9 @@
 use core_affinity::CoreId;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    mpsc, Arc,
+    mpsc, Arc, Condvar, Mutex,
 };
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 #[cfg(windows)]
 use windows::{
@@ -24,25 +23,25 @@ pub enum CpuEvent {
 pub struct CpuMonitor {
     cores_to_monitor: Vec<usize>,
     event_type: CpuEvent,
-    active: Arc<AtomicBool>,
+    active: Arc<(Mutex<bool>, Condvar)>,
+    worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl CpuMonitor {
-    pub fn new(
-        cores_to_monitor: Vec<usize>,
-        event_type: CpuEvent,
-        active: Arc<AtomicBool>,
-    ) -> Self {
+    pub fn new(cores_to_monitor: Vec<usize>, event_type: CpuEvent, active: bool) -> Self {
         CpuMonitor {
             cores_to_monitor,
             event_type,
-            active,
+            active: Arc::new((Mutex::new(active), Condvar::new())),
+            worker: None.into(),
         }
     }
 
     #[cfg(windows)]
-    pub fn start(self: Arc<Self>, sender: mpsc::Sender<CpuEvent>) -> JoinHandle<()> {
-        thread::spawn(move || {
+    pub fn start(self: Arc<Self>, sender: mpsc::Sender<CpuEvent>) {
+        let self_clone = self.clone();
+        let thread_name = self.get_thread_name();
+        let worker = thread::Builder::new().name(thread_name).spawn(move || {
             // Using PDH to monitor CPU usage
             unsafe {
                 // Open a query
@@ -77,10 +76,7 @@ impl CpuMonitor {
                 }
 
                 loop {
-                    if !self.active.load(Ordering::SeqCst) {
-                        thread::sleep(Duration::from_millis(500));
-                        continue;
-                    }
+                    self.wait_for_active();
 
                     // Collect the query data
                     status = PdhCollectQueryData(query);
@@ -147,20 +143,45 @@ impl CpuMonitor {
                 //     panic!("PdhCloseQuery failed with error: {}", status);
                 // }
             }
-        })
+        });
+        let mut worker_guard = self_clone.worker.lock().unwrap();
+        *worker_guard = Some(worker.unwrap());
+    }
+
+    fn wait_for_active(&self) {
+        let (lock, cvar) = &*self.active;
+        let mut active = lock.lock().unwrap();
+        while !*active {
+            // Wait for the condition variable to be notified
+            active = cvar.wait(active).unwrap();
+        }
+    }
+
+    fn get_thread_name(&self) -> String {
+        match self.event_type {
+            CpuEvent::EfficiencyCoreMonitor(_) => "EfficiencyCoreMonitor_thread".to_string(),
+            CpuEvent::PerformanceCoreMonitor(_) => "PerformanceCoreMonitor_thread".to_string(),
+        }
     }
 
     // Methods to control the active state of the monitor
     pub fn pause(&self) {
-        self.active.store(false, Ordering::SeqCst);
+        let (lock, _cvar) = &*self.active;
+        let mut active = lock.lock().unwrap();
+        *active = false;
     }
 
     pub fn resume(&self) {
-        self.active.store(true, Ordering::SeqCst);
+        let (lock, cvar) = &*self.active;
+        let mut active = lock.lock().unwrap();
+        *active = true;
+        cvar.notify_one();
     }
 
     pub fn is_active(&self) -> bool {
-        self.active.load(Ordering::SeqCst)
+        let (lock, _cvar) = &*self.active;
+        let active = lock.lock().unwrap();
+        *active
     }
 }
 

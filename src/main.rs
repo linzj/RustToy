@@ -3,7 +3,7 @@ mod cpu_event;
 
 use cpu_event::{CpuEvent, CpuMonitor, SpinLooper};
 use num_cpus;
-use std::sync::{atomic::AtomicBool, mpsc, Arc};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -22,24 +22,22 @@ fn main() {
         .filter(|id| !e_core_ids.contains(id))
         .collect();
 
-    let active_efficiency_cores = Arc::new(AtomicBool::new(true));
-    let active_performance_cores = Arc::new(AtomicBool::new(false));
     // Create monitors
     let efficiency_monitor = Arc::new(CpuMonitor::new(
         e_core_ids.clone(),
         CpuEvent::EfficiencyCoreMonitor(Vec::new()),
-        active_efficiency_cores.clone(),
+        true,
     ));
     let performance_monitor = Arc::new(CpuMonitor::new(
         rest_of_cores,
         CpuEvent::PerformanceCoreMonitor(Vec::new()),
-        active_performance_cores.clone(),
+        false,
     ));
 
     // Start the monitors
     let (sender, receiver) = mpsc::channel();
-    let efficiency_handle = CpuMonitor::start(efficiency_monitor.clone(), sender.clone());
-    let performance_handle = CpuMonitor::start(performance_monitor.clone(), sender.clone());
+    CpuMonitor::start(efficiency_monitor.clone(), sender.clone());
+    CpuMonitor::start(performance_monitor.clone(), sender.clone());
 
     // Create and start the SpinLooper
     let mut spin_looper = SpinLooper::new(e_core_ids);
@@ -91,15 +89,4 @@ fn main() {
             }
         }
     }
-
-    // Stop the looper and join threads
-    efficiency_monitor.pause();
-    performance_monitor.pause();
-
-    efficiency_handle
-        .join()
-        .expect("Failed to join efficiency monitor thread");
-    performance_handle
-        .join()
-        .expect("Failed to join performance monitor thread");
 }
