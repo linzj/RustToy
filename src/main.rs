@@ -3,10 +3,21 @@ mod cpu_event;
 
 use cpu_event::{CpuEvent, CpuMonitor, SpinLooper};
 use num_cpus;
+use std::panic;
+use std::process;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 fn main() {
+    // Configures the panic behavior to not only terminate the current thread but also the entire
+    // process.
+    panic::set_hook(Box::new(|info| {
+        // Log the panic information using the `log` crate
+        eprintln!("Panic occurred: {:?}", info);
+
+        // Abort the process
+        process::abort();
+    }));
     // Get the total number of logical cores
     let total_cores = num_cpus::get();
 
