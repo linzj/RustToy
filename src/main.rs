@@ -53,6 +53,7 @@ fn main() {
                 if !performance_monitor.is_active() && efficiency_monitor.is_active() {
                     efficiency_monitor.pause();
                     performance_monitor.resume();
+                    println!("Starting spin loop!");
                     spin_looper.start();
                     last_event_time = Instant::now();
                 }
@@ -63,7 +64,6 @@ fn main() {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let elapsed = last_event_time.elapsed();
-                spin_looper.stop_and_join();
                 if elapsed >= Duration::from_secs(10)
                     && performance_monitor.is_active()
                     && !efficiency_monitor.is_active()
@@ -74,6 +74,8 @@ fn main() {
                     );
                     performance_monitor.pause();
                     efficiency_monitor.resume();
+                    println!("Stopping spin loop!");
+                    spin_looper.stop_and_join();
                     last_event_time = Instant::now();
                 } else if !performance_monitor.is_active() && efficiency_monitor.is_active() {
                     println!("No efficiency cpu is fully consume, next loop!");

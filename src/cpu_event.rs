@@ -186,7 +186,7 @@ impl SpinLooper {
         assert!(self.handles.is_empty(), "SpinLooper already started.");
 
         for &core_id in &self.core_ids {
-            let should_stop = Arc::clone(&self.should_stop);
+            let should_stop = self.should_stop.clone();
             let handle = thread::spawn(move || {
                 // Set the thread's CPU affinity to the specified core.
                 core_affinity::set_for_current(CoreId { id: core_id });
@@ -207,6 +207,7 @@ impl SpinLooper {
         for handle in self.handles.drain(..) {
             handle.join().expect("Failed to join SpinLooper thread");
         }
+        self.should_stop.store(false, Ordering::SeqCst);
     }
 }
 
