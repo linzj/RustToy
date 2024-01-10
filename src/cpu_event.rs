@@ -12,7 +12,7 @@ use windows::{
     Win32::System::Performance::{
         PdhAddCounterW, PdhCollectQueryData, PdhGetFormattedCounterValue, PdhOpenQueryW,
         PDH_CALC_NEGATIVE_VALUE, PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA,
-        PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE, PDH_INVALID_HANDLE,
+        PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE, PDH_INVALID_ARGUMENT,
     },
 };
 // Define an enum for the events we are interested in
@@ -111,9 +111,9 @@ impl CpuMonitor {
                             continue;
                         }
 
-                        if status == PDH_INVALID_HANDLE {
+                        if status == PDH_INVALID_ARGUMENT {
                             eprintln!(
-                                "Invalid handle for counter index {}, core id: {}.",
+                                "Invalid argument for counter index {}, core id: {}.",
                                 counter_handles_index - 1,
                                 core_index
                             );
