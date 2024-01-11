@@ -142,7 +142,7 @@ impl CpuMonitor {
                             || counter_value.CStatus == PDH_CSTATUS_NEW_DATA
                         {
                             let value = counter_value.Anonymous.doubleValue;
-                            if value >= 100.0 {
+                            if value >= 99.0 {
                                 fully_consumed_cores.push(core_index);
                             }
                         }
