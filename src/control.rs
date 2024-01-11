@@ -1,15 +1,13 @@
 use crate::cpu_event::{CpuEvent, CpuMonitor, SpinLooper};
 use std::error::Error;
+use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // Define a trait for core states
 trait CoreState {
-    fn handle(
-        self: Box<Self>,
-        controller: &mut CoreStateController,
-    ) -> Result<Box<dyn CoreState>, Box<dyn Error>>;
+    fn handle(&self, controller: &mut CoreStateController) -> Result<(), Box<dyn Error>>;
 }
 
 // Define the state controller
@@ -18,7 +16,8 @@ pub struct CoreStateController {
     efficiency_monitor: Arc<CpuMonitor>,
     performance_monitor: Arc<CpuMonitor>,
     spin_looper: SpinLooper,
-    current_state: Option<Box<dyn CoreState>>,
+    current_state: Rc<Box<dyn CoreState>>,
+    last_event_time: Instant,
 }
 
 impl CoreStateController {
@@ -46,41 +45,32 @@ impl CoreStateController {
             efficiency_monitor,
             performance_monitor,
             spin_looper,
-            current_state: Some(Box::new(ECoreState)),
+            current_state: Rc::new(Box::new(ECoreState)),
+            last_event_time: Instant::now(),
         }
     }
 
     pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
         loop {
-            // Take out the current state from the Option, leaving None in its place.
-            if let Some(current_state) = self.current_state.take() {
-                // Handle the current state, which may return a new state.
-                let new_state = current_state.handle(self)?;
-
-                // Update the current state with the new state by putting it back into the Option.
-                self.current_state = Some(new_state);
-            } else {
-                // Handle the case where there is no current state.
-                // This could be an error or a signal to terminate the loop.
-                return Err("No current state available".into());
-            }
+            let current_state = &self.current_state.clone();
+            current_state.handle(self)?;
         }
     }
 
-    fn switch_to_ecore_state(&mut self) -> Box<dyn CoreState> {
+    fn switch_to_ecore_state(&mut self) {
         println!("Switching to ECoreState");
         self.performance_monitor.pause();
         self.efficiency_monitor.resume();
         self.spin_looper.stop_and_join();
-        Box::new(ECoreState)
+        self.current_state = Rc::new(Box::new(ECoreState));
     }
 
-    fn switch_to_pcore_state(&mut self) -> Box<dyn CoreState> {
+    fn switch_to_pcore_state(&mut self) {
         println!("Switching to PCoreState");
         self.efficiency_monitor.pause();
         self.performance_monitor.resume();
         self.spin_looper.start();
-        Box::new(PCoreState::new())
+        self.current_state = Rc::new(Box::new(PCoreState));
     }
 }
 
@@ -88,15 +78,12 @@ impl CoreStateController {
 struct ECoreState;
 
 impl CoreState for ECoreState {
-    fn handle(
-        self: Box<Self>,
-        controller: &mut CoreStateController,
-    ) -> Result<Box<dyn CoreState>, Box<dyn Error>> {
+    fn handle(&self, controller: &mut CoreStateController) -> Result<(), Box<dyn Error>> {
         match controller.receiver.recv() {
             // Wait indefinitely for the event
             Ok(CpuEvent::EfficiencyCoreMonitor(consumed_cores)) => {
                 println!("Efficiency cores fully consumed: {:?}", consumed_cores);
-                return Ok(controller.switch_to_pcore_state());
+                controller.switch_to_pcore_state();
             }
             Ok(_) => {
                 // Ignore other events in this state
@@ -105,32 +92,19 @@ impl CoreState for ECoreState {
                 return Err(Box::new(e));
             }
         }
-        Ok(self)
+        Ok(())
     }
 }
 
 // Define the PCoreState
-struct PCoreState {
-    last_event_time: Instant,
-}
-
-impl PCoreState {
-    fn new() -> Self {
-        PCoreState {
-            last_event_time: Instant::now(),
-        }
-    }
-}
+struct PCoreState;
 
 impl CoreState for PCoreState {
-    fn handle(
-        mut self: Box<Self>,
-        controller: &mut CoreStateController,
-    ) -> Result<Box<dyn CoreState>, Box<dyn Error>> {
+    fn handle(&self, controller: &mut CoreStateController) -> Result<(), Box<dyn Error>> {
         match controller.receiver.recv_timeout(Duration::from_secs(10)) {
             Ok(CpuEvent::PerformanceCoreMonitor(consumed_cores)) => {
                 println!("Performance cores fully consumed: {:?}", consumed_cores);
-                self.last_event_time = Instant::now();
+                controller.last_event_time = Instant::now();
             }
             Ok(CpuEvent::EfficiencyCoreMonitor(consumed_cores)) => {
                 println!(
@@ -139,15 +113,15 @@ impl CoreState for PCoreState {
                 );
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                let elapsed = self.last_event_time.elapsed();
+                let elapsed = controller.last_event_time.elapsed();
                 if elapsed >= Duration::from_secs(10) {
-                    return Ok(controller.switch_to_ecore_state());
+                    controller.switch_to_ecore_state();
                 }
             }
             Err(e) => {
                 return Err(Box::new(e));
             }
         }
-        Ok(self)
+        Ok(())
     }
 }
